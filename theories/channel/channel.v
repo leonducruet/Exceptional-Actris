@@ -30,11 +30,11 @@ Definition iProto_inv `{!heapGS Σ, !chanG Σ} γb γf (c c' : val) γ γ' : iPr
     let to_V g l := (λ v, Some (v, g)) <$> l in
     let df := if b then DfracOwn (1/2) else DfracDiscarded in
     let df' := if f then DfracOwn (1/2) else DfracDiscarded in
-    let qp := if b then to_V γf q else to_V γf q ++ [None] in
-    let qp' := if f then to_V γb q' else to_V γb q' ++ [None] in
+    let qp := if b || (negb f) then to_V γf q else to_V γf q ++ [None] in
+    let qp' := if f || (negb b) then to_V γb q' else to_V γb q' ++ [None] in
     γb ↪{df} b ∗ γf ↪{df'} f ∗
-    is_chan c c' {| active_front := f; active_back := b|} q q' ∗
-    iProto_ctx γ γ' qp qp' ∗
+    (if b || f then
+      is_chan c c' {| active_front := f; active_back := b|} q q' ∗ iProto_ctx γ γ' qp qp' else emp) ∗
     steps_lb (length q) ∗ steps_lb (length q') ∗
     (if b then £ (2 + 3 * length q') else emp) ∗
     (if f then £ (2 + 3 * length q) else emp).
@@ -78,13 +78,13 @@ Section prot.
     <! v> EMSG v; rec.
   Global Instance cancel_prot_aux_contractive : Contractive cancel_prot_def_aux.
   Proof. rewrite /cancel_prot_def_aux iEMsg_base_eq/iEMsg_base_def/=. solve_proto_contractive. Qed.
-  Definition cancel_prot_def : iProto Σ := <?> MSG None; fixpoint cancel_prot_def_aux.
+  Definition cancel_prot_def Q : iProto Σ := <?> MSG None {{ Q }}; fixpoint cancel_prot_def_aux.
   Definition cancel_prot_aux : seal (@cancel_prot_def). by eexists. Qed.
   Definition cancel_prot := cancel_prot_aux.(unseal).
   Local Definition cancel_prot_unseal : @cancel_prot = @cancel_prot_def := cancel_prot_aux.(seal_eq).
 
-  Definition send_or_cancel m : iProto Σ :=
-    <! (b : bool)> if b then m else MSG None; (iProto_dual (fixpoint cancel_prot_def_aux)).
+  Definition send_or_cancel Q m : iProto Σ :=
+    <! (b : bool)> if b then m else MSG None {{ Q }}; (iProto_dual (fixpoint cancel_prot_def_aux)).
 
   Lemma iEMsg_map_base f v P p :
     NonExpansive f →
@@ -102,11 +102,11 @@ Section prot.
     iMsg_dual (EMSG v {{ P }}; p) ≡ (EMSG v {{ P }}; (iProto_dual p))%msg.
   Proof. apply iEMsg_map_base, _. Qed.
 
-  Lemma zap_send v : ⊢ cancel_prot ⊑ <!> EMSG v; cancel_prot.
+  Lemma zap_send Q v : ⊢ cancel_prot Q ⊑ <!> EMSG v; cancel_prot Q.
   Proof.
     rewrite cancel_prot_unseal /cancel_prot_def {1}fixpoint_unfold/cancel_prot_def_aux.
     iApply iProto_le_swap. rewrite {3}iEMsg_base_eq/iEMsg_base_def/= {3 4}iMsg_exist_eq iMsg_base_eq.
-    iIntros (????) "(<- & eq & _) (%drop & %γf & <- & eq' & H)".
+    iIntros (????) "(<- & eq & Q) (%drop & %γf & <- & eq' & H)".
     iExists (<! (v0 : val)> EMSG v0; fixpoint cancel_prot_def_aux). iSplitL "eq H".
     { iModIntro. iRewrite -"eq". iExists v. iApply iProto_le_send.
       iIntros (??) "(<- & eq & _)". iExists _. iSplitR; first by iApply iProto_le_refl.
@@ -120,9 +120,9 @@ Section prot.
     by iSteps.
   Qed.
 
-  Lemma send_or_cancel_swap v1 v2 p :
-    ⊢ (<?> EMSG v1; send_or_cancel (EMSG v2; p)) ⊑
-      (send_or_cancel (EMSG v2; <?> EMSG v1; p)).
+  Lemma send_or_cancel_swap Q v1 v2 p :
+    ⊢ (<?> EMSG v1; send_or_cancel Q (EMSG v2; p)) ⊑
+      (send_or_cancel Q (EMSG v2; <?> EMSG v1; p)).
   Proof.
     rewrite iEMsg_base_eq/iEMsg_base_def iMsg_base_eq.
     iIntros (drop γf b) "". iApply iProto_le_swap.
@@ -138,9 +138,10 @@ Section prot.
       rewrite iMsg_base_eq. iIntros (??) "(<- & eq & _)". iExists p.
       iSplitL "eq". { iNext. iRewrite "eq". iApply iProto_le_refl. }
       iExists drop, γf. by iFrame "H".
-    + rewrite iMsg_base_eq. iDestruct "H'" as "(<- & eq' & _)".
-      iExists (iProto_dual (fixpoint cancel_prot_def_aux)). iSplitL "eq".
-      { iNext. iRewrite -"eq". iExists false. rewrite iMsg_base_eq. iApply iProto_le_refl. }
+    + rewrite iMsg_base_eq. iDestruct "H'" as "(<- & eq' & Q)".
+      iExists (iProto_dual (fixpoint cancel_prot_def_aux)). iSplitL "eq Q".
+      { iNext. iRewrite -"eq". iExists false. rewrite -iMsg_base_eq.
+        by iApply (iProto_le_payload_intro_l with "Q"). }
       iNext. iRewrite -"eq'". rewrite {2}fixpoint_unfold iProto_dual_message.
       iApply iProto_le_recv. iIntros (??) "(<- & eq & _)". iExists _.
       iSplitL "eq". { iNext. iRewrite -"eq". iApply iProto_le_refl. }
@@ -149,10 +150,10 @@ Section prot.
       iExists _, _, _. by iFrame "H".
   Qed.
 
-  Lemma send_or_cancel_send m : ⊢ send_or_cancel m ⊑ <!> m.
+  Lemma send_or_cancel_send Q m : ⊢ send_or_cancel Q m ⊑ <!> m.
   Proof. iExists true. iApply iProto_le_refl. Qed.
 
-  Lemma send_or_cancel_cancel m : ⊢ send_or_cancel m ⊑ iProto_dual cancel_prot.
+  Lemma send_or_cancel_cancel Q m : ⊢ send_or_cancel Q m ⊑ iProto_dual (cancel_prot Q).
   Proof.
     iExists false. rewrite cancel_prot_unseal iProto_dual_message iMsg_dual_base.
     iApply iProto_le_refl.
@@ -160,25 +161,46 @@ Section prot.
 
 End prot.
 
-Notation "↯" := cancel_prot : proto_scope.
+Notation "↯" := (fixpoint cancel_prot_def_aux) (at level 200) : proto_scope.
 
-Notation "'CANCEL'" := (iProto_dual ↯)%proto : proto_scope.
+Definition cancellable `{!heapGS Σ, !chanG Σ} (c : val) : iProp Σ :=
+  ∃ c' q,
+    chan_handle c ∗ is_chan c c' {| active_front := false; active_back := true |} q [].
 
-Notation "<!↯> m" := (send_or_cancel m) (at level 200, m at level 200) : proto_scope.
-Notation "<!↯ x1 .. xn > m" := (<!↯> ∃ x1, .. (∃ xn, m) ..)
-  (at level 200, x1 closed binder, xn closed binder, m at level 200,
-   format "<!↯  x1  ..  xn >  m") : proto_scope.
-Notation "<!↯.. x1 .. xn > m" := (<!↯> ∃.. x1, .. (∃.. xn, m) ..)
-  (at level 200, x1 closed binder, xn closed binder, m at level 200,
-   format "<!↯..  x1  ..  xn >  m") : proto_scope.
+Notation "↯ Q" := (cancel_prot Q) (at level 200, Q at level 20) : proto_scope.
 
-Notation "<?↯> m" := (iProto_dual (send_or_cancel (iMsg_dual m))) (at level 200, m at level 200) : proto_scope.
-Notation "<?↯ x1 .. xn > m" := (<?↯> ∃ x1, .. (∃ xn, m) ..)
+Notation "'CANCEL' Q" := (iProto_dual (↯ Q))%proto (at level 200, Q at level 20) : proto_scope.
+
+Notation "<!↯ | Q > m" := (send_or_cancel Q m) (at level 200, m at level 200, Q at level 20) : proto_scope.
+
+Notation "<!↯ x1 .. xn | Q > m" := (<!↯ | Q > ∃ x1, .. (∃ xn, m) ..)
+  (at level 200, x1 closed binder, xn closed binder, m at level 200, Q at level 20,
+   format "<!↯  x1  ..  xn  |  Q  >  m") : proto_scope.
+Notation "<!↯.. x1 .. xn | Q > m" := (<!↯ | Q > ∃.. x1, .. (∃.. xn, m) ..)
+  (at level 200, x1 closed binder, xn closed binder, m at level 200, Q at level 20,
+   format "<!↯..  x1  ..  xn  |  Q  >  m") : proto_scope.
+Notation "<!↯ x1 .. xn > m" := (<!↯ | True > ∃ x1, .. (∃ xn, m) ..)
   (at level 200, x1 closed binder, xn closed binder, m at level 200,
-   format "<?↯  x1  ..  xn >  m") : proto_scope.
-Notation "<?↯.. x1 .. xn > m" := (<?↯> ∃.. x1, .. (∃.. xn, m) ..)
+   format "<!↯  x1  ..  xn  >  m") : proto_scope.
+Notation "<!↯.. x1 .. xn > m" := (<!↯ | True > ∃.. x1, .. (∃.. xn, m) ..)
   (at level 200, x1 closed binder, xn closed binder, m at level 200,
-   format "<?↯..  x1  ..  xn >  m") : proto_scope.
+   format "<!↯..  x1  ..  xn  >  m") : proto_scope.
+
+Notation "<?↯ | Q > m" := (iProto_dual (send_or_cancel Q (iMsg_dual m)))
+  (at level 200, m at level 200, Q at level 20) : proto_scope.
+
+Notation "<?↯ x1 .. xn | Q > m" := (<?↯ | Q > ∃ x1, .. (∃ xn, m) ..)
+  (at level 200, x1 closed binder, xn closed binder, m at level 200, Q at level 20,
+   format "<?↯  x1  ..  xn  |  Q  >  m") : proto_scope.
+Notation "<?↯.. x1 .. xn | Q > m" := (<?↯ | Q > ∃.. x1, .. (∃.. xn, m) ..)
+  (at level 200, x1 closed binder, xn closed binder, m at level 200, Q at level 20,
+   format "<?↯..  x1  ..  xn  |  Q  >  m") : proto_scope.
+Notation "<?↯ x1 .. xn | Q > m" := (<?↯ | Q > ∃ x1, .. (∃ xn, m) ..)
+  (at level 200, x1 closed binder, xn closed binder, m at level 200, Q at level 20,
+   format "<?↯  x1  ..  xn  |  Q  >  m") : proto_scope.
+Notation "<?↯.. x1 .. xn | Q > m" := (<?↯ | Q > ∃.. x1, .. (∃.. xn, m) ..)
+  (at level 200, x1 closed binder, xn closed binder, m at level 200, Q at level 20,
+   format "<?↯..  x1  ..  xn  |  Q  >  m") : proto_scope.
 
 Section specs.
 
@@ -186,13 +208,20 @@ Section specs.
   Context `{!heapGS Σ, !chanG Σ}.
   Implicit Types TT : tele.
 
-  Lemma iProto_inv_sym back front c c' γ γ' :
-    iProto_inv back front c c' γ γ' ⊢ iProto_inv front back c' c γ' γ.
+  Lemma iProto_inv_sym γb γf c c' γ γ' :
+    iProto_inv γb γf c c' γ γ' ⊢ iProto_inv γf γb c' c γ' γ.
   Proof.
-    iSteps as (q q' ??) "?? chan ctx £ £'".
-    iPoseProof (is_chan_sym with "chan") as "chan".
-    iPoseProof (iProto_ctx_sym with "ctx") as "ctx".
-    by iSteps.
+    iSteps as (q q' b f) "?? chan £ £'".
+    case b.
+    + iDecompose "chan" as "chan ctx".
+      iPoseProof (is_chan_sym with "chan") as "chan".
+      iPoseProof (iProto_ctx_sym with "ctx") as "ctx".
+      rewrite orb_true_r. by iSteps.
+    + case f; last by iSteps.
+      iDecompose "chan" as "chan ctx".
+      iPoseProof (is_chan_sym with "chan") as "chan".
+      iPoseProof (iProto_ctx_sym with "ctx") as "ctx".
+      by iSteps.
   Qed.
 
   Lemma iProto_pointsto_le c p1 p2 : c ↣ p1 ⊢ ▷ (p1 ⊑ p2) -∗ c ↣ p2.
@@ -218,7 +247,7 @@ Section specs.
     iMod (inv_alloc N _ (iProto_inv γb γf c c' γ γ') with "[chan ctx γb' γf' steps £]") as "#inv".
     { iSteps. iExists true. iSteps. iExists true. by iSteps. }
     iFrame "c γ γb". iSplitR; first by iFrame "inv".
-    iFrame "c' γf γ'". iExists γb, c, γ. iModIntro.
+    iFrame "c' γ' γf". iExists γb, c, γ. iModIntro.
     iApply (inv_alter with "inv").
     iStep 2. iIntros "H". iSplitL "H"; first by iApply iProto_inv_sym.
     iIntros "H". by iApply iProto_inv_sym.
@@ -232,10 +261,11 @@ Section specs.
     iSteps as "c P". rewrite iProto_pointsto_unseal.
     iDestruct "c" as (γb γf c' γ γ') "(γb & c & γ & #inv)".
     iStep 4.
-    iInv "inv" as (q q' ? f) "(>γb' & >γf & >chan & ctx & >#steps & >#steps' & £ & £')" "close".
+    iInv "inv" as (q q' ? f) "(>γb' & >γf & chan & >#steps & >#steps' & £ & £')" "close".
     iDestruct (ghost_var_agree with "γb γb'") as %<-.
+    iDecompose "chan" as "chan ctx".
     iFrame "chan". iExists (P tt), (max (length q) (length q')).
-    case: f.
+    case : f.
     + iSplitR. { iSteps. by case: (Nat.max_dec (length q) (length q'))=>->. }
       iSteps as_anon/ as "steps_max chan (£0 & £1 & £2 & £3 & £4)".
       { iExists true. iSteps. iExists true. by iSteps. }
@@ -275,8 +305,9 @@ Section specs.
     iSteps as "c". rewrite iProto_pointsto_unseal.
     iDestruct "c" as (γb γf c' γ γ') "(γb & c & γ & #inv)".
     iStep 4.
-    iInv "inv" as (q q' ? f) "(>γb' & >γf & >chan & ctx & >#steps & >#steps' & £ & £')" "close".
-    iDestruct (ghost_var_agree with "γb γb'") as %<-. iFrame "chan".
+    iInv "inv" as (q q' ? f) "(>γb' & >γf & chan & >#steps & >#steps' & £ & £')" "close".
+    iDestruct (ghost_var_agree with "γb γb'") as %<-.
+    iDecompose "chan" as "chan ctx". iFrame "chan".
     iSteps as_anon / as (?) "q' (£1 & £2 & £3)".
     { iExists true. by iSteps. }
     case: q'=>[|[m drop] q'].
@@ -303,25 +334,27 @@ Section specs.
       by iSteps.
   Qed.
 
-  Global Instance cancel_spec {TT} c :
-    SPEC {{ c ↣ CANCEL }}
+  Global Instance cancel_spec {TT} c Q :
+    SPEC {{ c ↣ CANCEL Q ∗ Q }}
       cancel c
     {{ RET #(); emp }}.
   Proof.
-    iSteps as "c". rewrite iProto_pointsto_unseal.
+    iSteps as "c Q". rewrite iProto_pointsto_unseal.
     iDestruct "c" as (γb γf c' γ γ') "(γb & c & γ & #inv)".
     iStep 4.
-    iInv "inv" as (q q' ? f) "(>γb' & >γf & >chan & ctx & >#steps & >#steps' & £ & £')" "close".
-    iDestruct (ghost_var_agree with "γb γb'") as %<-. iFrame "chan".
+    iInv "inv" as (q q' ? f) "(>γb' & >γf & chan & >#steps & >#steps' & £ & £')" "close".
+    iDestruct (ghost_var_agree with "γb γb'") as %<-.
+    iDecompose "chan" as "chan ctx". iFrame "chan".
     iExists _, (γb ↪{#1/2} true ∗ iProto_ctx γ γ' (((λ v : val * val, Some (v, γf)) <$> q) ++ [None])
       (if f then [] else [None]))%I. iDestruct "£" as ">£".
-    iSplitL "ctx γ γb £".
+    rewrite orb_false_r.
+    iSplitL "ctx γ γb £ Q".
     {
-      iCombine "ctx γ γb £" as "H". iSplitL "H"; first by (iIntros "!>"; iApply "H").
-      iIntros "!>(ctx & γ & γb & £)". iDestruct "£" as "((£1 & £2) & (£ & £' & £''))". rewrite Nat.add_0_r.
+      iCombine "ctx γ γb £ Q" as "H". iSplitL "H"; first by (iIntros "!>"; iApply "H").
+      iIntros "!>(ctx & γ & γb & £ & Q)". iDestruct "£" as "(£1 & £2 & £ & £' & £'')". rewrite Nat.add_0_r.
       iMod (lc_fupd_elim_later with "£2 ctx") as "ctx".
       rewrite cancel_prot_unseal iProto_dual_message iMsg_dual_base/=.
-      iMod (iProto_send _ _ _ _ _ None (iProto_dual (fixpoint cancel_prot_def_aux)) with "ctx γ []") as "(ctx & γ)".
+      iMod (iProto_send _ _ _ _ _ None (iProto_dual (fixpoint cancel_prot_def_aux)) with "ctx γ [Q]") as "(ctx & γ)".
       { rewrite iMsg_base_eq. by iSteps. }
       iAssert (£ (length (if f then (λ v : val * val, Some (v, γb)) <$> q'
                             else ((λ v : val * val, Some (v, γb)) <$> q') ++ [None]))) with "[£1 £'']" as "£''".
@@ -343,26 +376,33 @@ Section specs.
       iApply ("IH" with "[] γb £ £' γ ctx"). iModIntro. iApply (steps_lb_le with "steps'"). lia.
     }
     iModIntro. iSplit.
-    { iStep 2 as "chan ctx γ γb £ _". iFrame. iSteps. iExists true. by iSteps. }
-    iIntros "(chan & γb & ctx)". iMod (ghost_var_update_halves false with "γb γb'") as "(γb & γb')".
+    { iStep 2 as "chan ctx γ γb £ Q _". iFrame. iSteps. iExists true. iSteps. rewrite orb_false_r. by iSteps. }
+    iIntros "(chan & γb & ctx)". iMod (ghost_var_update_halves false with "γb γb'") as "(γb & γb1)".
     iMod (ghost_var_persist with "γb") as "#γb". iMod steps_lb_0 as "steps_0".
-    iSteps. iExists false. by iSteps.
+    iSteps. iExists false. iSteps.
+    by case: f; iSteps.
   Qed.
 
-  Global Instance cancelled_recv_spec c :
-    SPEC {{ c ↣ ↯ }}
+(*
+  Not quite sure of how useful this could be
+
+
+  Global Instance cancelled_recv_spec_continue c Q :
+    SPEC {{ c ↣ ↯ Q }}
       recv c
-    {{ RET NONEV; c ↣ ↯ }}.
+    {{ RET NONEV; c ↣ ↯ Q }}.
   Proof.
     iSteps as "c". rewrite iProto_pointsto_unseal.
     iDestruct "c" as (γb γf c' γ γ') "(γb & c & γ & #inv)".
     iStep 4.
-    iInv "inv" as (q q' ? f) "(>γb' & >γf & >chan & ctx & >#steps & >#steps' & £ & £')" "close".
-    iDestruct (ghost_var_agree with "γb γb'") as %<-. iFrame "chan".
+    iInv "inv" as (q q' ? f) "(>γb' & >γf & chan & >#steps & >#steps' & £ & £')" "close".
+    iDestruct (ghost_var_agree with "γb γb'") as %<-.
+    iDecompose "chan" as "chan ctx". iFrame "chan".
     iSteps as_anon / as (?) "q' (£1 & £2 & £3)".
     { iExists true. by iSteps. }
     case: q'=>[|[m drop] q'].
-    + iDecompose "q'" as "γf ctx chan". iExists true. iSteps. iExists false. by iSteps.
+    + iDecompose "q'" as "γf ctx chan".
+      iExists true. iSteps. iExists false. iSteps.
     + iDecompose "q'" as "chan".
       have -> : ∀ A (b : bool) (a : A) l l', (if b then a :: l else a :: l') = a :: if b then l else l'
         by move=>? [].
@@ -373,48 +413,95 @@ Section specs.
       by iMod (lc_fupd_elim_later with "£1 H") as "(ctx & γ & (% & _))".
   Qed.
 
-  Global Instance recv_or_cancel_recv_spec {TT} c v P p :
-    SPEC {{ c ↣ (<?↯.. (x : TT)> EMSG v x {{ P x }}; p x) }}
+*)
+
+  Global Instance cancelled_recv_spec c Q :
+    SPEC {{ c ↣ ↯ Q }}
       recv c
-    {{ w, RET w; (∃ tt, ⌜w = SOMEV (v tt)⌝ ∗ c ↣ (p tt) ∗ P tt) ∨
-                 (⌜w = NONEV⌝ ∗ c ↣ ↯) }}.  
+    {{ RET NONEV; cancellable c ∗ Q }}.
   Proof.
     iSteps as "c". rewrite iProto_pointsto_unseal.
     iDestruct "c" as (γb γf c' γ γ') "(γb & c & γ & #inv)".
     iStep 4.
-    iInv "inv" as (q q' ? f) "(>γb' & >γf & >chan & ctx & >#steps & >#steps' & £ & £')" "close".
-    iDestruct (ghost_var_agree with "γb γb'") as %<-. iFrame "chan".
+    iInv "inv" as (q q' ? f) "(>γb' & >γf & chan & >#steps & >#steps' & £ & £')" "close".
+    iDestruct (ghost_var_agree with "γb γb'") as %<-.
+    iDecompose "chan" as "chan ctx". iFrame "chan".
+    iSteps as_anon / as (?) "q' (£1 & £2 & £3)".
+    { iExists true. by iSteps. }
+    case: q'=>[|[m drop] q'].
+    + iDecompose "q'" as "γf ctx chan".
+      iMod (lc_fupd_elim_later with "£2 ctx") as "ctx".
+      rewrite cancel_prot_unseal.
+      iMod (iProto_recv with "ctx γ") as (p') "H".
+      rewrite iMsg_base_eq.
+      iMod (lc_fupd_elim_later with "£1 H") as "(ctx & γ & (_ & _ & Q))".
+      iMod (ghost_var_update_halves false with "γb γb'") as "(γb & γb')".
+      iMod (ghost_var_persist with "γb") as "#γb".
+      iExists false. iSteps. iExists false. by iSteps.
+    + iDecompose "q'" as "chan".
+      have -> : ∀ A (b : bool) (a : A) l l', (if b then a :: l else a :: l') = a :: if b then l else l'
+        by move=>? [].
+      iMod (lc_fupd_elim_later with "£2 ctx") as "ctx".
+      rewrite cancel_prot_unseal.
+      iMod (iProto_recv with "ctx γ") as (p') "H".
+      rewrite iMsg_base_eq.
+      by iMod (lc_fupd_elim_later with "£1 H") as "(ctx & γ & (% & _))".
+  Qed.
+
+  Global Instance recv_or_cancel_recv_spec_continue {TT} c v P Q p :
+    SPEC {{ c ↣ <?↯.. (x : TT) | Q > EMSG v x {{ P x }}; p x }}
+      recv c
+    {{ w, RET w; (∃ tt, ⌜w = SOMEV (v tt)⌝ ∗ c ↣ (p tt) ∗ P tt) ∨
+                 (⌜w = NONEV⌝ ∗ cancellable c ∗ Q) }}.
+  Proof.
+    iSteps as "c". rewrite iProto_pointsto_unseal.
+    iDestruct "c" as (γb γf c' γ γ') "(γb & c & γ & #inv)".
+    iStep 4.
+    iInv "inv" as (q q' ? f) "(>γb' & >γf & chan & >#steps & >#steps' & £ & £')" "close".
+    iDestruct (ghost_var_agree with "γb γb'") as %<-.
+    iDecompose "chan" as "chan ctx". iFrame "chan".
     iSteps as_anon / as (?) "q' (£1 & £2 & £3)".
     { iExists true. by iSteps. }
     iMod (lc_fupd_elim_later with "£2 ctx") as "ctx".
     case: q'=>[|[m drop] q'].
-    + iDecompose "q'" as "γf ctx chan". iExists true. iSteps. iExists false.
+    + iDecompose "q'" as "γf ctx chan".
       rewrite iProto_dual_message iMsg_dual_exist.
       iMod (iProto_recv with "ctx γ") as (p') "H".
-      rewrite iMsg_base_eq iMsg_exist_eq.
+      rewrite iMsg_exist_eq.
       iMod (lc_fupd_elim_later with "£1 H") as "(ctx & γ & (%b & H))".
-      case: b. Search iMsg_dual.
-      - rewrite iMsg_texist_exist. iMsg_dual_involutive. iDestruct "H" as (?) "(%h & h')".
-       by iSteps.
+      case: b.
+      - iPoseProof (iMsg_dual_involutive (∃.. x : TT, EMSG v x {{ P x }}; p x)%msg with "H") as "H".
+        rewrite iMsg_texist_exist iEMsg_base_eq/iEMsg_base_def iMsg_base_eq/iMsg_base_def
+          iMsg_exist_eq/=.
+        by iDestruct "H" as (???) "(% & _)".
+      - iPoseProof (iMsg_dual_base with "H") as "H". rewrite iMsg_base_eq.
+        iDestruct "H" as "(_ & eq & Q)". rewrite involutive.
+        iPoseProof (later_equivI _ p' with "eq") as "eq".
+        iMod (lc_fupd_elim_later with "£3 eq") as "eq".
+        iRewrite -"eq" in "γ". iMod (ghost_var_update_halves false with "γb γb'") as "(γb & _)".
+        iMod (ghost_var_persist with "γb") as "#γb". iExists false. iSteps. iExists false. by iSteps.
     + iDecompose "q'" as "chan".
       have -> : ∀ A (b : bool) (a : A) l l', (if b then a :: l else a :: l') = a :: if b then l else l'
         by move=>? [].
-      iMod (lc_fupd_elim_later with "£2 ctx") as "ctx".
-      rewrite cancel_prot_unseal.
+      iMod (lc_fupd_elim_later with "£1 ctx") as "ctx".
+      rewrite iProto_dual_message iMsg_dual_exist.
       iMod (iProto_recv with "ctx γ") as (p') "H".
-      rewrite iMsg_base_eq.
-      by iMod (lc_fupd_elim_later with "£1 H") as "(ctx & γ & (% & _))".
-
-
-
-
-
-
-
-
-
-
-
-
+      rewrite iMsg_exist_eq.
+      iMod (lc_fupd_elim_later with "£3 H") as "(ctx & γ & (%b & H))".
+      iDestruct "£" as ">(£1 & £)".
+      case: b.
+      - iPoseProof (iMsg_dual_involutive (∃.. x : TT, EMSG v x {{ P x }}; p x)%msg with "H") as "H".
+        rewrite iMsg_texist_exist iEMsg_base_eq/iEMsg_base_def iMsg_base_eq/iMsg_base_def
+          iMsg_exist_eq/=.
+        iDestruct "H" as (x ??) "(%h & eq & P)". move: h=>[<-->->].
+        iDecompose "P" as "(P & _)"/ as "abs"; last by iDestruct (ghost_var_agree with "γb abs") as %abs.
+        iPoseProof (later_equivI _ p' with "eq") as "eq".
+        iMod (lc_fupd_elim_later with "£1 eq") as "eq".
+        iRewrite -"eq" in "γ".
+        iExists true. iSteps. iSplitR; last by iSteps.
+        iIntros "!>!>". iApply (steps_lb_le with "steps'"). lia.
+      - iPoseProof (iMsg_dual_base with "H") as "H". rewrite iMsg_base_eq.
+        by iDestruct "H" as "(%abs & _)".
+  Qed.
 
 End specs.

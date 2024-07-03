@@ -505,8 +505,8 @@ Section proto.
     iMsg_dual (∃ x, m x) ≡ (∃ x, iMsg_dual (m x))%msg.
   Proof. apply iMsg_map_exist. Qed.
   Lemma iMsg_dual_texist_exist {TT : tele} (m : TT → iMsg Σ V) :
-    iMsg_dual (∃.. x, m x) ≡ (∃.. x, iMsg_dual (m x))%msg.
-  Proof. 
+    iMsg_dual (∃.. x, m x)%msg ≡ (∃.. x, iMsg_dual (m x))%msg.
+  Proof. apply iMsg_map_texist_exist. Qed.
 
   Global Instance iProto_dual_involutive : Involutive (≡) (@iProto_dual Σ V).
   Proof.
@@ -522,6 +522,17 @@ Section proto.
       iRewrite "Hpd". by iRewrite ("IH" $! pdd).
     - iIntros "H". destruct (Next_uninj p') as [p'' Hp']. iExists _.
       rewrite Hp'. iSplitL; [by auto|]. iIntros "!>". by iRewrite ("IH" $! p'').
+  Qed.
+
+  Global Instance iMsg_dual_involutive : Involutive (≡) (@iMsg_map Σ V iProto_dual).
+  Proof.
+    intros m v p. iSplit.
+    + iDestruct 1 as (p') "((%p'' & H & #eq) & eq')".
+      iRewrite "eq'". iApply internal_eq_rewrite; last done.
+      iNext. iRewrite "eq". by rewrite involutive.
+    + iIntros "H". destruct (Next_uninj p) as [p' Hp]. iExists (iProto_dual p').
+      rewrite Hp/=. iSplitL; first by iFrame "H".
+      by rewrite involutive.
   Qed.
 
   (** ** Append *)

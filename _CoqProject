@@ -1,0 +1,6 @@
+-R theories eactris
+theories/utils/ghost_var.v
+theories/utils/queue.v
+theories/channel/atomic_channel.v
+theories/channel/proto.v
+theories/channel/channel.v
